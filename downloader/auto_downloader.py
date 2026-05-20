@@ -1,4 +1,5 @@
 import os
+import re
 import time
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
@@ -27,6 +28,18 @@ FALLBACK_TRACKERS = [
     "udp://share.camoe.cn:8080/announce",
     "udp://tracker.bittorrent.am:6969/announce",
 ]
+
+# 磁力链接 BTIH ID 正则
+MAGNET_BTIH_PATTERN = re.compile(r"xt=urn:btih:([A-Fa-f0-9]{40})", re.IGNORECASE)
+
+
+def extract_btih_id(magnet):
+    """从磁力链接中提取 BTIH ID（40位十六进制）。"""
+    match = MAGNET_BTIH_PATTERN.search(magnet)
+    if match:
+        return match.group(1).upper()
+    # 如果无法提取，使用磁力链接前40个字符的哈希
+    return magnet[:40].replace(":", "").replace("/", "").replace("?", "").upper()[:40]
 
 
 def load_completed():
@@ -73,8 +86,18 @@ def load_trackers():
     return trackers
 
 
-def build_aria2_cmd(magnet, trackers):
-    """构建 aria2c 命令行参数。"""
+def build_aria2_cmd(magnet, trackers, task_dir):
+    """构建 aria2c 命令行参数。
+    
+    Args:
+        magnet: 磁力链接
+        trackers: tracker 列表
+        task_dir: 任务专属目录（用于保存日志和进度）
+    """
+    log_file = os.path.join(task_dir, "download.log")
+    session_file = os.path.join(task_dir, "session.dat")
+    control_file = os.path.join(task_dir, "aria2.control")
+    
     cmd = [
         "aria2c",
         "--seed-time=0",
@@ -84,23 +107,89 @@ def build_aria2_cmd(magnet, trackers):
         "--disable-ipv6=true",
         "--enable-dht=true",
         "--dht-file-path=/tmp/dht.dat",
+        # 日志输出到文件
+        f"--log={log_file}",
+        "--log-level=notice",
+        # 保存会话/进度
+        f"--save-session={session_file}",
+        "--save-session-interval=60",
+        # 控制文件（用于暂停/恢复）
+        f"--stop-with-process={os.getpid()}",
+        # 自动保存进度
+        "--force-save=true",
+        # 下载完成前显示进度
+        "--show-console-readout=true",
+        # 控制台输出到文件（追加模式）
     ]
+    
+    # 如果存在之前的 session，尝试恢复
+    if os.path.exists(session_file):
+        cmd.append(f"--input-file={session_file}")
+    
     for t in trackers:
         cmd.append(f"--bt-tracker={t}")
+    
     cmd.append(magnet)
-    return cmd
+    
+    return cmd, log_file
 
 
 def download(magnet, trackers):
-    print(f"\n🚀 开始下载：{magnet[:60]}...")
-    cmd = build_aria2_cmd(magnet, trackers)
-
+    """下载单个磁力链接，输出保存到任务专属目录。"""
+    btih_id = extract_btih_id(magnet)
+    
+    # 创建任务专属目录
+    task_dir = os.path.join(SAVE_PATH, btih_id)
+    os.makedirs(task_dir, exist_ok=True)
+    
+    # 保存磁力链接信息
+    info_file = os.path.join(task_dir, "magnet.txt")
+    with open(info_file, "w", encoding="utf-8") as f:
+        f.write(magnet + "\n")
+    
+    print(f"\n🚀 开始下载：{btih_id}")
+    print(f"   📁 任务目录：{task_dir}")
+    
+    cmd, log_file = build_aria2_cmd(magnet, trackers, task_dir)
+    
     try:
-        subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
-        print(f"✅ 下载完成：{magnet[:60]}")
-        save_completed(magnet)
-    except Exception:
-        print(f"❌ 下载失败：{magnet[:60]}")
+        # 打开日志文件用于写入 aria2c 输出
+        with open(log_file, "a", encoding="utf-8") as log_f:
+            log_f.write(f"\n{'='*60}\n")
+            log_f.write(f"启动时间: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+            log_f.write(f"磁力链接: {magnet}\n")
+            log_f.write(f"BTIH ID: {btih_id}\n")
+            log_f.write(f"{'='*60}\n\n")
+            log_f.flush()
+            
+            # 运行 aria2c，stdout/stderr 都重定向到日志文件
+            result = subprocess.run(
+                cmd,
+                stdout=log_f,
+                stderr=subprocess.STDOUT,
+                cwd=task_dir
+            )
+            
+            if result.returncode == 0:
+                print(f"✅ 下载完成：{btih_id}")
+                # 标记完成
+                completed_file = os.path.join(task_dir, "completed")
+                with open(completed_file, "w", encoding="utf-8") as f:
+                    f.write(f"completed at {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+                save_completed(magnet)
+            else:
+                print(f"❌ 下载失败（退出码 {result.returncode}）：{btih_id}")
+                # 标记失败
+                failed_file = os.path.join(task_dir, "failed")
+                with open(failed_file, "w", encoding="utf-8") as f:
+                    f.write(f"failed at {time.strftime('%Y-%m-%d %H:%M:%S')} with code {result.returncode}\n")
+                    
+    except Exception as e:
+        print(f"❌ 下载异常：{btih_id} - {e}")
+        # 记录异常
+        error_file = os.path.join(task_dir, "error.log")
+        with open(error_file, "a", encoding="utf-8") as f:
+            f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} - {e}\n")
 
 
 def main():
@@ -111,6 +200,7 @@ def main():
     print(f"   TRACKERS_FILE  = {TRACKERS_FILE}")
     print(f"   MAX_PARALLEL   = {MAX_PARALLEL}")
     print(f"   CHECK_INTERVAL = {CHECK_INTERVAL}")
+    print(f"   任务目录格式   = {SAVE_PATH}/<BTIH_ID>/")
 
     while True:
         trackers = load_trackers()

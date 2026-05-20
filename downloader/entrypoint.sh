@@ -4,7 +4,7 @@
 set -e
 
 TRACKERS_FILE="${TRACKERS_FILE:-/app/data/trackers.txt}"
-TRACKERS_URL="${TRACKERS_URL:-https://raw.githubusercontent.com/adysec/tracker/main/trackers_best.txt}"
+TRACKERS_URL="${TRACKERS_URL:-https://raw.githubusercontent.com/adysec/tracker/main/trackers_best_udp.txt}"
 
 echo "📥 启动 trackers 自动更新服务..."
 

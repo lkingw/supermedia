@@ -2,7 +2,7 @@
 # 更新 trackers 的 cron 脚本（每日 03:00 执行）
 
 TRACKERS_FILE="${TRACKERS_FILE:-/app/data/trackers.txt}"
-TRACKERS_URL="${TRACKERS_URL:-https://raw.githubusercontent.com/adysec/tracker/main/trackers_best.txt}"
+TRACKERS_URL="${TRACKERS_URL:-https://raw.githubusercontent.com/adysec/tracker/main/trackers_best_udp.txt}"
 
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] 开始更新 trackers..."
 if curl -sL --max-time 60 "$TRACKERS_URL" -o "$TRACKERS_FILE.tmp"; then
