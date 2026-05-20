@@ -1,0 +1,32 @@
+services:
+  crawler:
+    build: ./crawler
+    volumes:
+      - ./data:/app/data
+    env_file: .env
+    restart: unless-stopped
+    depends_on:
+      - downloader
+
+  downloader:
+    build: ./downloader
+    network_mode: host
+    volumes:
+      - ./data:/app/data
+      - ./media:/media
+    env_file: .env
+    restart: unless-stopped
+
+  jellyfin:
+    image: jellyfin/jellyfin:latest
+    ports:
+      - "${JELLYFIN_PORT:-8096}:8096"
+    volumes:
+      - ./media:/media:ro
+      - jellyfin_config:/config
+      - jellyfin_cache:/cache
+    restart: unless-stopped
+
+volumes:
+  jellyfin_config:
+  jellyfin_cache:
