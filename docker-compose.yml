@@ -6,16 +6,49 @@ services:
     env_file: .env
     restart: unless-stopped
     depends_on:
-      - downloader
+      - task-manager
 
-  downloader:
-    build: ./downloader
+  aria2:
+    image: p3terx/aria2-pro:latest
+    network_mode: host
+    environment:
+      - PUID=0
+      - PGID=0
+      - UMASK_SET=022
+      - RPC_SECRET=${ARIA2_SECRET:-supermedia}
+      - RPC_PORT=6800
+      - LISTEN_PORT=6888
+      - DISK_CACHE=64M
+      - IPV6_MODE=false
+      - UPDATE_TRACKERS=false
+      - CUSTOM_TRACKER_URL=${TRACKERS_URL}
+      - TZ=Asia/Shanghai
+    volumes:
+      # 镜像默认下载目录是 /data
+      - ./downloads:/data
+      - ./aria2-conf:/config
+      - ./aria2-cache:/app/.cache
+    env_file: .env
+    restart: unless-stopped
+
+  task-manager:
+    build: ./task-manager
     network_mode: host
     volumes:
       - ./data:/app/data
+      - ./downloads:/data
       - ./media:/media
+    environment:
+      - ARIA2_RPC_URL=http://localhost:6800/jsonrpc
+      - ARIA2_SECRET=${ARIA2_SECRET:-supermedia}
+      # 镜像默认下载目录是 /data
+      - ARIA2_DOWNLOAD_DIR=/data
+      - MEDIA_DIR=/media
+      - TRACKERS_FILE=/app/data/trackers.txt
     env_file: .env
     restart: unless-stopped
+    depends_on:
+      - aria2
 
   jellyfin:
     image: jellyfin/jellyfin:latest

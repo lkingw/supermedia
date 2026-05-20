@@ -1,0 +1,5 @@
+:8080 {
+    root * /usr/local/www/aria2
+    file_server
+    reverse_proxy /jsonrpc localhost:6800
+}
