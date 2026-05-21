@@ -191,13 +191,39 @@ def extract_links(html: str, base_url: str) -> list[str]:
     return links
 
 
-def crawl_url(url: str, depth: int, max_depth: int, visited: set[str], existing_magnets: set[str]) -> list[str]:
+def write_magnets_batch(magnets: list[str], filepath: str, existing: set[str]) -> int:
+    """
+    批量写入磁力链接到文件（去重后追加）。
+    返回实际写入的条数。
+    """
+    if not magnets:
+        return 0
+
+    # 去重：去除 existing 中已有的，以及列表内重复的
+    unique = list(dict.fromkeys(m for m in magnets if m not in existing))
+
+    if not unique:
+        return 0
+
+    os.makedirs(os.path.dirname(filepath), exist_ok=True)
+    with open(filepath, "a", encoding="utf-8") as f:
+        for magnet in unique:
+            f.write(magnet + "\n")
+            existing.add(magnet)
+
+    return len(unique)
+
+
+def crawl_url(url: str, depth: int, max_depth: int, visited: set[str],
+              existing_magnets: set[str], pending: list[str], batch_size: int = 100) -> list[str]:
     """
     递归爬取单个 URL，提取磁力链接。
     - depth: 当前深度
     - max_depth: 最大爬取深度
     - visited: 已访问 URL 集合（避免循环）
     - existing_magnets: 已有磁力链接集合（用于去重）
+    - pending: 待写入的磁力链接缓冲区（达到 batch_size 时自动写入）
+    - batch_size: 批量写入阈值，默认 100
     返回：新发现的磁力链接列表
     """
     new_magnets = []
@@ -220,17 +246,26 @@ def crawl_url(url: str, depth: int, max_depth: int, visited: set[str], existing_
     # 从页面文本中提取磁力链接
     page_magnets = extract_magnets_from_text(html)
     for magnet in page_magnets:
-        if magnet not in existing_magnets:
+        if magnet not in existing_magnets and magnet not in pending:
             new_magnets.append(magnet)
-            existing_magnets.add(magnet)
+            pending.append(magnet)
             logger.info("发现新磁力链接: %s", magnet[:80] + "..." if len(magnet) > 80 else magnet)
+
+    # 缓冲区达到 batch_size，立即写入
+    if len(pending) >= batch_size:
+        written = write_magnets_batch(pending, MAGNET_FILE, existing_magnets)
+        logger.info("批量写入 %d 条磁力链接（缓冲区已清空）", written)
+        pending.clear()
 
     # 如果还有剩余深度，继续跟随链接
     if depth < max_depth:
         links = extract_links(html, url)
         for link in links:
             if link not in visited:
-                sub_magnets = crawl_url(link, depth + 1, max_depth, visited, existing_magnets)
+                sub_magnets = crawl_url(
+                    link, depth + 1, max_depth, visited,
+                    existing_magnets, pending, batch_size,
+                )
                 new_magnets.extend(sub_magnets)
 
     return new_magnets
@@ -258,7 +293,10 @@ def run_crawl():
     # 已访问 URL 集合
     visited = set()
 
-    # 所有新发现的磁力链接
+    # 待写入缓冲区（每 100 条写入一次）
+    pending = []
+
+    # 统计新发现的磁力链接总数
     all_new_magnets = []
 
     # 对每个种子 URL 执行爬取
@@ -270,30 +308,21 @@ def run_crawl():
                 max_depth=CRAWL_DEPTH,
                 visited=visited,
                 existing_magnets=existing_magnets,
+                pending=pending,
+                batch_size=100,
             )
             all_new_magnets.extend(new_magnets)
         except Exception as e:
             logger.error("爬取种子 URL 失败 [%s]: %s", seed_url, e)
 
-    # 写入新磁力链接
-    if all_new_magnets:
-        # 去重（可能从不同页面提取到相同链接）
-        unique_magnets = list(dict.fromkeys(all_new_magnets))
-        logger.info("共发现 %d 条新磁力链接（去重后 %d 条）", len(all_new_magnets), len(unique_magnets))
+    # 爬取结束后，写入缓冲区中剩余的磁力链接
+    if pending:
+        written = write_magnets_batch(pending, MAGNET_FILE, existing_magnets)
+        logger.info("最终写入剩余 %d 条磁力链接", written)
+        pending.clear()
 
-        # 确保目录存在
-        os.makedirs(os.path.dirname(MAGNET_FILE), exist_ok=True)
-
-        # 追加写入
-        with open(MAGNET_FILE, "a", encoding="utf-8") as f:
-            for magnet in unique_magnets:
-                f.write(magnet + "\n")
-
-        logger.info("新磁力链接已追加写入: %s", MAGNET_FILE)
-    else:
-        logger.info("本次爬取未发现新磁力链接")
-
-    logger.info("爬取任务完成 | 访问页面数: %d | 新磁力链接数: %d", len(visited), len(all_new_magnets))
+    total_written = len(all_new_magnets)
+    logger.info("爬取任务完成 | 访问页面数: %d | 新磁力链接数: %d", len(visited), total_written)
 
 
 # ============================================================

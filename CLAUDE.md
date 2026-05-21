@@ -10,6 +10,16 @@ SuperMedia 是一个全自动的媒体获取与管理系统，通过 Docker Comp
 2. **downloader** — Python 下载守护进程，读取 `data/magnet.txt`，通过 aria2c 并行下载到 `media/`
 3. **jellyfin** — 流媒体服务，读取 `media/` 提供播放
 
+## Remote Server Deployment
+
+- **Server IP**: `192.168.1.202`
+- **SSH User**: `more`
+- **SSH Password**: ``
+- **Docker Compose Location**: `/home/more/supermedia/`
+- **Deploy**: `cd /home/more/supermedia && git pull && docker compose build task-manager && docker compose up -d task-manager`
+- **Logs**: `docker logs -f task-manager`
+- **All services**: `docker compose up -d --build`
+
 ## Commands
 
 - **启动所有服务**: `docker compose up -d`
