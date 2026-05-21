@@ -392,6 +392,14 @@ def sync_completed_to_media():
                     f.write(magnet_uri + "\n")
                 save_completed(magnet_uri)
 
+            # 同步完成后删除 downloads 中的源目录
+            if synced and src_dir != ARIA2_DOWNLOAD_DIR and os.path.isdir(src_dir):
+                try:
+                    shutil.rmtree(src_dir)
+                    print(f"🗑️  已删除源目录: {src_dir}")
+                except Exception as del_err:
+                    print(f"⚠️  删除源目录失败 {src_dir}: {del_err}")
+
         except Exception as e:
             print(f"❌ 同步失败 {btih_id}: {e}")
 
