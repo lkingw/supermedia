@@ -28,6 +28,8 @@ VIDEO_EXTENSIONS = {
     ".mp4", ".mkv", ".avi", ".wmv", ".flv", ".mov", ".rmvb", ".rm",
     ".ts", ".m4v", ".mpg", ".mpeg", ".3gp", ".webm", ".vob", ".f4v",
 }
+# 图片扩展名（保留的图片文件）
+IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".tiff"}
 # ===================================================================
 
 MAGNET_BTIH_PATTERN = re.compile(r"xt=urn:btih:([A-Fa-f0-9]{40})", re.IGNORECASE)
@@ -312,8 +314,37 @@ def process_metadata_tasks():
 
 
 
+def get_next_media_index():
+    """获取 media 目录下一个可用的序号（001, 002, ...）。"""
+    if not os.path.exists(MEDIA_DIR):
+        return 1
+    indices = []
+    for name in os.listdir(MEDIA_DIR):
+        if os.path.isdir(os.path.join(MEDIA_DIR, name)):
+            try:
+                indices.append(int(name))
+            except ValueError:
+                pass
+    return max(indices, default=0) + 1
+
+
+def generate_movie_nfo(dest_dir, original_title, original_files, magnet_uri=""):
+    """生成 Jellyfin 可识别的 movie.nfo 文件。"""
+    nfo_content = f"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<movie>
+    <title>{original_title}</title>
+    <originaltitle>{original_title}</originaltitle>
+    <sorttitle>{original_title}</sorttitle>
+    <comment>Magnet: {magnet_uri}</comment>
+</movie>
+"""
+    nfo_path = os.path.join(dest_dir, "movie.nfo")
+    with open(nfo_path, "w", encoding="utf-8") as f:
+        f.write(nfo_content)
+
+
 def sync_completed_to_media():
-    """检查已完成任务，将下载文件同步到 media 目录。"""
+    """检查已完成任务，将下载文件同步到 media 目录，并规范化命名。"""
     result = rpc_call("aria2.tellStopped", [0, 200, ["gid", "status", "files", "bittorrent", "dir"]])
     if not result:
         return
@@ -328,7 +359,7 @@ def sync_completed_to_media():
         if not files:
             continue
 
-        # 只同步实际下载的文件（有路径且长度>0）
+        # 只处理实际下载的文件（有路径且长度>0）
         downloaded_files = [
             f for f in files
             if f.get("path") and int(f.get("length", 0)) > 0
@@ -356,41 +387,68 @@ def sync_completed_to_media():
         if not os.path.isdir(src_dir):
             src_dir = ARIA2_DOWNLOAD_DIR
 
-        # 目标目录：以 info name 或 BTIH ID 命名
-        info_dict = bt_info.get("info", {})
-        btih_id = info_dict.get("name") if info_dict else os.path.basename(src_dir)
-        # 清理目录名中的非法字符
-        if btih_id:
-            btih_id = btih_id[:100]  # 截断过长的名称
-        dest_dir = os.path.join(MEDIA_DIR, btih_id)
+        # 获取原始目录名（用于 NFO）
+        info_dict = bt_info.get("info", {}) if isinstance(bt_info, dict) else {}
+        original_title = info_dict.get("name") if info_dict else os.path.basename(src_dir)
+        if not original_title:
+            original_title = "Unknown"
+
+        # 生成序号目录名（001, 002, ...）
+        media_index = get_next_media_index()
+        dest_dir_name = f"{media_index:03d}"
+        dest_dir = os.path.join(MEDIA_DIR, dest_dir_name)
         os.makedirs(dest_dir, exist_ok=True)
 
-        # 同步文件
+        # 收集原始文件名信息用于 NFO
+        original_file_names = []
+
+        # 同步并规范化文件
         try:
             synced = False
+            file_counter = 1
+
             for f in downloaded_files:
                 src_path = f.get("path", "")
                 if not src_path or not os.path.exists(src_path):
                     continue
+
                 fname = os.path.basename(src_path)
-                dest_path = os.path.join(dest_dir, fname)
+                fext = Path(fname).suffix.lower()
+
+                # 只保留视频和图片文件
+                if fext not in VIDEO_EXTENSIONS and fext not in IMAGE_EXTENSIONS:
+                    continue
+
+                original_file_names.append(fname)
+
+                # 生成序号文件名（001.mp4, 002.jpg...）
+                if fext in VIDEO_EXTENSIONS:
+                    new_fname = f"{file_counter:03d}{fext}"
+                    file_counter += 1
+                else:
+                    # 图片文件保留原名（通常是封面）
+                    new_fname = f"poster{fext}" if fext in IMAGE_EXTENSIONS else fname
+
+                dest_path = os.path.join(dest_dir, new_fname)
 
                 if os.path.isfile(src_path) and not os.path.exists(dest_path):
                     shutil.copy2(src_path, dest_path)
                     synced = True
-                elif os.path.isdir(src_path) and not os.path.exists(dest_path):
-                    shutil.copytree(src_path, dest_path)
-                    synced = True
+                elif os.path.isdir(src_path):
+                    # 目录直接复制（保留内部结构）
+                    if not os.path.exists(dest_path):
+                        shutil.copytree(src_path, dest_path)
+                        synced = True
 
             if synced:
-                print(f"📁 已同步到 media: {btih_id}")
+                print(f"📁 已同步到 media/{dest_dir_name}: {original_title[:50]}")
 
-            # 保存磁力链接信息
-            if magnet_uri:
-                info_file = os.path.join(dest_dir, "magnet.txt")
-                with open(info_file, "w", encoding="utf-8") as f:
-                    f.write(magnet_uri + "\n")
-                save_completed(magnet_uri)
+                # 生成 NFO 文件
+                generate_movie_nfo(dest_dir, original_title, original_file_names, magnet_uri)
+
+                # 保存磁力链接信息
+                if magnet_uri:
+                    save_completed(magnet_uri)
 
             # 同步完成后删除 downloads 中的源目录
             if synced and src_dir != ARIA2_DOWNLOAD_DIR and os.path.isdir(src_dir):
@@ -401,7 +459,7 @@ def sync_completed_to_media():
                     print(f"⚠️  删除源目录失败 {src_dir}: {del_err}")
 
         except Exception as e:
-            print(f"❌ 同步失败 {btih_id}: {e}")
+            print(f"❌ 同步失败 {original_title}: {e}")
 
 
 def update_trackers():
