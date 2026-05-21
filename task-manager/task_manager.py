@@ -405,7 +405,6 @@ def sync_completed_to_media():
         # 同步并规范化文件
         try:
             synced = False
-            file_counter = 1
 
             for f in downloaded_files:
                 src_path = f.get("path", "")
@@ -421,21 +420,13 @@ def sync_completed_to_media():
 
                 original_file_names.append(fname)
 
-                # 生成序号文件名（001.mp4, 002.jpg...）
-                if fext in VIDEO_EXTENSIONS:
-                    new_fname = f"{file_counter:03d}{fext}"
-                    file_counter += 1
-                else:
-                    # 图片文件保留原名（通常是封面）
-                    new_fname = f"poster{fext}" if fext in IMAGE_EXTENSIONS else fname
-
-                dest_path = os.path.join(dest_dir, new_fname)
+                # 保留原始文件名
+                dest_path = os.path.join(dest_dir, fname)
 
                 if os.path.isfile(src_path) and not os.path.exists(dest_path):
                     shutil.copy2(src_path, dest_path)
                     synced = True
                 elif os.path.isdir(src_path):
-                    # 目录直接复制（保留内部结构）
                     if not os.path.exists(dest_path):
                         shutil.copytree(src_path, dest_path)
                         synced = True
