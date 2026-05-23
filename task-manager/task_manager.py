@@ -218,6 +218,8 @@ def add_magnet(magnet, trackers):
     result = rpc_call("aria2.addUri", [[magnet], options])
     if result:
         print(f"✅ 已添加: {btih_id}")
+        # 立即记录到 completed.txt，防止重复下发
+        save_completed(magnet)
         return True
     else:
         print(f"❌ 添加失败: {btih_id}")
@@ -453,6 +455,96 @@ def sync_completed_to_media():
             print(f"❌ 同步失败 {original_title}: {e}")
 
 
+def cleanup_stale_tasks():
+    """清理僵尸任务：超过12小时、进度<50%、已下载<600M。"""
+    # 获取活跃 + 等待中的任务（需要时间信息）
+    all_gids = []
+
+    result = rpc_call("aria2.tellActive", [["gid", "status", "totalLength", "completedLength", "downloadSpeed", "connections", "numSeeders", "dir", "files", "bittorrent"]])
+    if result:
+        all_gids.extend(result)
+
+    offset = 0
+    while True:
+        result = rpc_call("aria2.tellWaiting", [offset, 200, ["gid", "status", "totalLength", "completedLength", "downloadSpeed", "connections", "numSeeders", "dir", "files", "bittorrent"]])
+        if not result:
+            break
+        all_gids.extend(result)
+        if len(result) < 200:
+            break
+        offset += 200
+
+    if not all_gids:
+        return
+
+    cleaned = 0
+    now = time.time()
+    stale_threshold = 12 * 3600  # 12小时（秒）
+    max_downloaded = 600 * 1024 * 1024  # 600MB
+
+    for task in all_gids:
+        gid = task.get("gid", "")
+        total_len = int(task.get("totalLength", 0))
+        completed_len = int(task.get("completedLength", 0))
+        download_speed = int(task.get("downloadSpeed", 0))
+
+        # 跳过正在下载的任务（有速度说明活跃）
+        if download_speed > 0:
+            continue
+
+        # 跳过总大小为0的任务（可能还在获取元数据）
+        if total_len <= 0:
+            continue
+
+        # 计算进度
+        progress = completed_len / total_len if total_len > 0 else 0
+
+        # 判断是否为僵尸任务：进度<50% 且 已下载<600M
+        if progress >= 0.5 or completed_len >= max_downloaded:
+            continue
+
+        # 检查是否超过12小时没有进展
+        # 通过检查下载目录的修改时间来判断
+        dir_path = task.get("dir", "")
+        if dir_path and os.path.isdir(dir_path):
+            try:
+                dir_mtime = os.path.getmtime(dir_path)
+                idle_seconds = now - dir_mtime
+                if idle_seconds < stale_threshold:
+                    continue
+            except OSError:
+                continue
+        else:
+            continue
+
+        # 符合清理条件，移除任务
+        bt_info = task.get("bittorrent", {})
+        info_dict = bt_info.get("info", {}) if isinstance(bt_info, dict) else {}
+        task_name = info_dict.get("name", gid)[:50]
+        progress_pct = progress * 100
+        downloaded_mb = completed_len / (1024 * 1024)
+        idle_hours = (now - dir_mtime) / 3600
+
+        print(f"🧹 清理僵尸任务: {task_name}")
+        print(f"   进度: {progress_pct:.1f}%, 已下载: {downloaded_mb:.1f}MB, 空闲: {idle_hours:.1f}h")
+
+        # 强制移除任务
+        rpc_call("aria2.remove", [gid])
+
+        # 删除下载目录中的残留文件
+        if dir_path and os.path.isdir(dir_path) and dir_path != ARIA2_DOWNLOAD_DIR:
+            try:
+                shutil.rmtree(dir_path)
+                print(f"   已删除残留目录: {dir_path}")
+            except Exception as e:
+                print(f"   删除残留目录失败: {e}")
+
+        cleaned += 1
+
+    if cleaned > 0:
+        print(f"🧹 本次清理了 {cleaned} 个僵尸任务")
+
+
 def update_trackers():
     """从远程下载最新的 trackers 列表。"""
     print(f"📥 更新 trackers: {TRACKERS_URL}")
@@ -497,13 +589,16 @@ def main():
 
     while True:
         try:
-            # 1. 处理元数据就绪的任务（选择视频文件 → 恢复下载）
+            # 1. 处理元数据就绪的任务（选择视频文件）
             process_metadata_tasks()
 
             # 2. 同步已完成任务到 media
             sync_completed_to_media()
 
-            # 3. 检查新磁力链接并添加
+            # 3. 清理僵尸任务（每轮都检查）
+            cleanup_stale_tasks()
+
+            # 4. 检查新磁力链接并添加
             completed = load_completed()
             magnets = load_magnets()
             new_magnets = [m for m in magnets if m not in completed]
